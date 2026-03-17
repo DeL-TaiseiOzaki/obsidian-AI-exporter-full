@@ -11,7 +11,7 @@ import {
   validateApiKey,
   validateObsidianUrl,
 } from '../lib/validation';
-import { DEFAULT_OBSIDIAN_URL } from '../lib/constants';
+import { DEFAULT_OBSIDIAN_URL, VALID_MESSAGE_FORMATS } from '../lib/constants';
 import { getMessage } from '../lib/i18n';
 import { sendMessage } from '../lib/messaging';
 
@@ -256,8 +256,6 @@ function validateOutputOptions(outputOptions: OutputOptions): boolean {
   return outputOptions.obsidian || outputOptions.file || outputOptions.clipboard;
 }
 
-const VALID_MESSAGE_FORMATS = ['callout', 'plain', 'blockquote'] as const;
-
 /**
  * Collect settings from form
  * Normalizes all values at collection time to avoid downstream mutation
@@ -411,8 +409,21 @@ async function handleTest(): Promise<void> {
       return;
     }
 
-    // Temporarily save settings for the test
-    await saveSettings(settings);
+    // Validate Obsidian settings before saving (same as handleSave)
+    const validation = validateObsidianSettings(settings);
+    if (validation.error) {
+      showStatus(validation.error, 'error');
+      elements.testBtn.disabled = false;
+      return;
+    }
+
+    // Save validated and normalized settings for the test
+    await saveSettings({
+      ...settings,
+      obsidianApiKey: validation.normalizedApiKey,
+      obsidianUrl: validation.normalizedUrl,
+      vaultPath: validation.normalizedVaultPath,
+    });
 
     // Send test connection message to background script
     const response = await sendMessage({ action: 'testConnection' });

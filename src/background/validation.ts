@@ -10,6 +10,8 @@ import {
   MAX_FILENAME_LENGTH,
   MAX_FRONTMATTER_TITLE_LENGTH,
   MAX_TAGS_COUNT,
+  MAX_TAG_LENGTH,
+  MAX_VAULT_PATH_LENGTH,
   ALLOWED_ORIGINS,
   VALID_MESSAGE_ACTIONS,
   VALID_OUTPUT_DESTINATIONS,
@@ -64,8 +66,13 @@ export function validateMessageContent(message: ExtensionMessage): boolean {
     if (containsPathTraversal(message.fileName)) {
       return false;
     }
-    if (typeof message.vaultPath === 'string' && containsPathTraversal(message.vaultPath)) {
-      return false;
+    if (typeof message.vaultPath === 'string') {
+      if (containsPathTraversal(message.vaultPath)) {
+        return false;
+      }
+      if (message.vaultPath.length > MAX_VAULT_PATH_LENGTH) {
+        return false;
+      }
     }
   }
 
@@ -140,6 +147,29 @@ export function validateNoteData(note: ObsidianNote): boolean {
   }
   if (!Array.isArray(note.frontmatter.tags) || note.frontmatter.tags.length > MAX_TAGS_COUNT) {
     return false;
+  }
+  // Validate individual tag values: must be strings within length limit
+  if (
+    !note.frontmatter.tags.every(
+      (t: unknown) => typeof t === 'string' && t.length > 0 && t.length <= MAX_TAG_LENGTH
+    )
+  ) {
+    return false;
+  }
+
+  // Validate frontmatter URL scheme (prevent javascript: or data: injection)
+  if (typeof note.frontmatter.url !== 'string') {
+    return false;
+  }
+  if (note.frontmatter.url.length > 0) {
+    try {
+      const parsed = new URL(note.frontmatter.url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return false;
+      }
+    } catch {
+      return false;
+    }
   }
 
   return true;

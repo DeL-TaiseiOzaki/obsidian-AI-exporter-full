@@ -34,15 +34,21 @@ export const MAX_FRONTMATTER_TITLE_LENGTH = 500;
 /** Maximum number of tags allowed in frontmatter */
 export const MAX_TAGS_COUNT = 50;
 
+/** Maximum length for a single tag string (characters) */
+export const MAX_TAG_LENGTH = 100;
+
+/** Maximum length for vault path (filesystem constraint) */
+export const MAX_VAULT_PATH_LENGTH = 200;
+
+/** Minimum length for API key (security constraint) */
+export const MIN_API_KEY_LENGTH = 16;
+
 // ============================================================
 // Network Configuration
 // ============================================================
 
 /** Default Obsidian Local REST API URL */
 export const DEFAULT_OBSIDIAN_URL = 'http://127.0.0.1:27123';
-
-/** Default Obsidian Local REST API port (legacy, used for migration) */
-export const DEFAULT_OBSIDIAN_PORT = 27123;
 
 /** Minimum valid port number */
 export const MIN_PORT = 1024;
@@ -117,6 +123,11 @@ export const VALID_OUTPUT_DESTINATIONS = ['obsidian', 'file', 'clipboard'] as co
  * Valid AI platform sources
  */
 export const VALID_SOURCES = ['gemini', 'claude', 'perplexity', 'chatgpt'] as const;
+
+/**
+ * Valid message format options for template rendering
+ */
+export const VALID_MESSAGE_FORMATS = ['callout', 'plain', 'blockquote'] as const;
 
 /**
  * Human-readable display labels for AI platforms
