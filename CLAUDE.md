@@ -69,10 +69,16 @@ The following are **always required**. No shortcuts.
 ## Commands
 
 ```bash
-npm run build    # TypeScript check + Vite production build
-npm run dev      # Vite dev server with HMR
-npm run lint     # ESLint on src/
-npm run format   # Prettier formatting
+npm run build          # TypeScript check + Vite production build
+npm run build:zip      # Build + zip dist/ for Chrome Web Store
+npm run dev            # Vite dev server with HMR
+npm run lint           # ESLint on src/ + platform consistency check
+npm run lint:platforms # Platform consistency check only
+npm run format         # Prettier formatting (write)
+npm run format:check   # Prettier formatting (check only, for CI)
+npm run test           # Run test suite (vitest)
+npm run test:watch     # Run tests in watch mode
+npm run test:coverage  # Run tests with coverage report
 ```
 
 ### E2E Selector Validation
