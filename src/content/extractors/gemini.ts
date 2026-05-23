@@ -5,11 +5,8 @@
 
 import { BaseExtractor } from './base';
 import { sanitizeHtml } from '../../lib/sanitize';
-import {
-  MAX_DEEP_RESEARCH_TITLE_LENGTH,
-  MAX_CONVERSATION_TITLE_LENGTH,
-  SCROLL_TIMEOUT,
-} from '../../lib/constants';
+import { extractErrorMessage } from '../../lib/error-utils';
+import { MAX_CONVERSATION_TITLE_LENGTH, SCROLL_TIMEOUT } from '../../lib/constants';
 import { ensureAllElementsLoaded, type ScrollResult } from '../../lib/scroll-manager';
 import type {
   SyncSettings,
@@ -34,9 +31,6 @@ export class GeminiExtractor extends BaseExtractor {
     this.enableAutoScroll = settings.enableAutoScroll ?? false;
   }
 
-  /** Stores scroll result from onBeforeExtract for onAfterExtract */
-  private lastScrollResult: ScrollResult | null = null;
-
   /**
    * Check if this extractor can handle the current page
    */
@@ -52,7 +46,7 @@ export class GeminiExtractor extends BaseExtractor {
     return panel !== null;
   }
 
-  // ========== Template Method Hooks ==========
+  // ========== Extraction ==========
 
   /**
    * Intercept for Deep Research mode before normal extraction
@@ -64,77 +58,53 @@ export class GeminiExtractor extends BaseExtractor {
   }
 
   /**
-   * Pre-extraction: run auto-scroll to load all messages
+   * Override extract() so Gemini-specific auto-scroll runs before message
+   * extraction and a scroll-timeout warning is appended after.
    */
-  protected async onBeforeExtract(): Promise<void> {
-    if (!this.enableAutoScroll) {
-      this.lastScrollResult = {
-        fullyLoaded: true,
-        elementCount: 0,
-        scrollIterations: 0,
-        skipped: true,
-      };
-      return;
-    }
+  async extract(): Promise<ExtractionResult> {
+    try {
+      if (!this.canExtract()) {
+        return { success: false, error: `Not on a ${this.platformLabel} page` };
+      }
+      const deepResearchResult = this.tryExtractDeepResearch();
+      if (deepResearchResult) return deepResearchResult;
 
+      const scrollResult = await this.runAutoScroll();
+
+      console.info(`[G2O] Extracting ${this.platformLabel} conversation`);
+      const messages = this.extractMessages();
+      const conversationId = this.getConversationId() || `${this.platform}-${Date.now()}`;
+      const title = this.getTitle();
+      const result = this.buildConversationResult(messages, conversationId, title, this.platform);
+
+      if (scrollResult && !scrollResult.fullyLoaded && !scrollResult.skipped) {
+        const warning =
+          `Auto-scroll timed out after ${SCROLL_TIMEOUT / 1000}s. ` +
+          `Some earlier messages may be missing (${scrollResult.elementCount} turns loaded).`;
+        return { ...result, warnings: [...(result.warnings ?? []), warning] };
+      }
+      return result;
+    } catch (error) {
+      console.error(`[G2O] ${this.platformLabel} extraction error:`, error);
+      return { success: false, error: extractErrorMessage(error) };
+    }
+  }
+
+  private async runAutoScroll(): Promise<ScrollResult> {
+    if (!this.enableAutoScroll) {
+      return { fullyLoaded: true, elementCount: 0, scrollIterations: 0, skipped: true };
+    }
     const container = this.queryWithFallback<HTMLElement>(SELECTORS.scrollContainer);
     if (!container) {
       console.info('[G2O] No scroll container found, skipping auto-scroll');
-      this.lastScrollResult = {
-        fullyLoaded: true,
-        elementCount: 0,
-        scrollIterations: 0,
-        skipped: true,
-      };
-      return;
+      return { fullyLoaded: true, elementCount: 0, scrollIterations: 0, skipped: true };
     }
-
-    this.lastScrollResult = await ensureAllElementsLoaded(
-      container,
-      COMPUTED_SELECTORS.conversationTurn
-    );
+    return ensureAllElementsLoaded(container, COMPUTED_SELECTORS.conversationTurn);
   }
 
-  /**
-   * Post-extraction: append scroll timeout warning if needed
-   */
-  protected onAfterExtract(result: ExtractionResult): ExtractionResult {
-    const sr = this.lastScrollResult;
-    this.lastScrollResult = null;
-
-    if (sr && !sr.fullyLoaded && !sr.skipped) {
-      const warning =
-        `Auto-scroll timed out after ${SCROLL_TIMEOUT / 1000}s. ` +
-        `Some earlier messages may be missing (${sr.elementCount} turns loaded).`;
-      return {
-        ...result,
-        warnings: [...(result.warnings ?? []), warning],
-      };
-    }
-
-    return result;
-  }
-
-  /**
-   * Get title of the Deep Research report
-   */
-  getDeepResearchTitle(): string {
-    const titleEl = this.queryWithFallback<HTMLElement>(DEEP_RESEARCH_SELECTORS.title);
-    if (titleEl?.textContent) {
-      return this.sanitizeText(titleEl.textContent).substring(0, MAX_DEEP_RESEARCH_TITLE_LENGTH);
-    }
-    return 'Untitled Deep Research Report';
-  }
-
-  /**
-   * Extract Deep Research report body content
-   */
-  extractDeepResearchContent(): string {
-    const contentEl = this.queryWithFallback<HTMLElement>(DEEP_RESEARCH_SELECTORS.content);
-    if (contentEl) {
-      return sanitizeHtml(contentEl.innerHTML);
-    }
-    return '';
+  /** Expose platform selectors to BaseExtractor's DR title/content helpers. */
+  protected getDeepResearchSelectors() {
+    return DEEP_RESEARCH_SELECTORS;
   }
 
   /**
