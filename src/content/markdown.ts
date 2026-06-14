@@ -7,7 +7,7 @@
  * - markdown-formatting.ts — Message formatting templates
  */
 
-import { formatMessage, formatToolContent } from './markdown-formatting';
+import { formatMessage, formatToolContent, formatAttachments } from './markdown-formatting';
 import { convertDeepResearchContent } from './markdown-deep-research';
 import { generateHash } from '../lib/hash';
 import { MAX_FILENAME_BASE_LENGTH, FILENAME_ID_SUFFIX_LENGTH } from '../lib/constants';
@@ -88,6 +88,11 @@ export function conversationToNote(data: ConversationData, options: TemplateOpti
       }
       const formatted = formatMessage(message.content, message.role, options, data.source);
       bodyParts.push(formatted);
+
+      // Render attachments (uploaded files, pasted-text cards) after the message
+      if (message.attachments && message.attachments.length > 0) {
+        bodyParts.push(formatAttachments(message.attachments, options));
+      }
     }
 
     body = bodyParts.join('\n\n');

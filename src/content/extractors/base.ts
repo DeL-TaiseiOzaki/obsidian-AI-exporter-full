@@ -12,6 +12,7 @@ import type {
   ConversationMetadata,
   DeepResearchLinks,
   DeepResearchSource,
+  MessageAttachment,
 } from '../../lib/types';
 import { extractErrorMessage } from '../../lib/error-utils';
 import { generateHash } from '../../lib/hash';
@@ -105,12 +106,19 @@ export abstract class BaseExtractor implements IConversationExtractor {
 
   // ========== Settings ==========
 
+  /** Include tool-use / intermediate content (web search, code interpreter, etc.) */
+  enableToolContent = false;
+  /** Include message attachments (uploaded files, pasted-text cards) when present in the DOM */
+  includeAttachments = true;
+
   /**
    * Apply user settings before extraction.
-   * Override in subclasses that have platform-specific settings.
+   * Subclasses with extra platform-specific settings should override and call
+   * `super.applySettings(settings)` to keep the shared flags in sync.
    */
-  applySettings(_settings: SyncSettings): void {
-    // no-op by default
+  applySettings(settings: SyncSettings): void {
+    this.enableToolContent = settings.enableToolContent ?? false;
+    this.includeAttachments = settings.includeAttachments ?? true;
   }
 
   // ========== Deep Research Builder ==========
@@ -270,6 +278,54 @@ export abstract class BaseExtractor implements IConversationExtractor {
       }
     });
     return messages;
+  }
+
+  // ========== Attachment Utilities ==========
+
+  /**
+   * Collect message attachments (uploaded files, images, pasted-text cards)
+   * found within `scope`.
+   *
+   * Binary file bodies live on the platform's servers and are not present in
+   * the DOM, so only a reference (name + kind) is captured. Cards are
+   * de-duplicated by kind + name. Pasted long text is labelled "PASTED" and is
+   * classified as the `paste` kind.
+   *
+   * @param scope - Element to search within (typically the message/turn)
+   * @param cardSelectors - Fallback chain for attachment card containers
+   * @param nameSelectors - Fallback chain for the filename/label inside a card
+   */
+  protected collectAttachments(
+    scope: Element,
+    cardSelectors: readonly string[],
+    nameSelectors: readonly string[]
+  ): MessageAttachment[] {
+    const cards = this.queryAllWithFallback<HTMLElement>(cardSelectors, scope);
+
+    const attachments: MessageAttachment[] = [];
+    const seen = new Set<string>();
+    for (const card of cards) {
+      const nameEl = this.queryWithFallback<HTMLElement>(nameSelectors, card);
+      // Only treat an element as an attachment card when a filename/label is
+      // actually found. Do NOT fall back to the card's full textContent: a
+      // mis-matched generic container would otherwise inject a slab of page
+      // text as an attachment "name" into the export.
+      const name = this.sanitizeText(nameEl?.textContent ?? '');
+      if (!name) continue;
+
+      // Claude renders pasted long text as a card labelled "PASTED". Match the
+      // label at the start of the name so ordinary filenames that merely
+      // contain "paste" (e.g. copy-paste.txt) are not misclassified.
+      const isPaste = /^pasted\b/i.test(name);
+      const contentImg = card.querySelector('img:not([alt="favicon"])');
+      const kind: MessageAttachment['kind'] = isPaste ? 'paste' : contentImg ? 'image' : 'file';
+
+      const key = `${kind}:${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      attachments.push({ name, kind });
+    }
+    return attachments;
   }
 
   /**
@@ -498,5 +554,48 @@ export abstract class BaseExtractor implements IConversationExtractor {
       if (results.length > 0) return Array.from(results);
     }
     return [];
+  }
+
+  /**
+   * Collect the UNION of all selectors (not just the first that matches),
+   * de-duplicated, with nested matches dropped and results returned in DOM
+   * order.
+   *
+   * Unlike {@link queryAllWithFallback}, this does not stop at the first
+   * matching tier. That matters when sibling content blocks legitimately use
+   * different selector tiers within one container (e.g. a Claude tool section
+   * rendering `.standard-markdown` while the body renders `.progressive-markdown`):
+   * a first-match-only query would return one tier and miss the other. Nested
+   * matches are dropped (outermost kept) so an ancestor that also matches a
+   * broad selector does not double-count its descendants' text.
+   *
+   * @param selectors - CSS selectors to union
+   * @param parent - Element/Document to search within (defaults to document)
+   * @returns De-duplicated, non-nested matches in DOM order
+   */
+  protected queryAllUnion<T extends Element>(
+    selectors: readonly string[],
+    parent: Element | Document = document
+  ): T[] {
+    if (!selectors || selectors.length === 0) return [];
+
+    const seen = new Set<Element>();
+    const found: T[] = [];
+    for (const selector of selectors) {
+      for (const el of parent.querySelectorAll<T>(selector)) {
+        if (!seen.has(el)) {
+          seen.add(el);
+          found.push(el);
+        }
+      }
+    }
+
+    // Drop any element nested inside another matched element (keep outermost),
+    // then sort into DOM order.
+    return found
+      .filter(el => !found.some(other => other !== el && other.contains(el)))
+      .sort((a, b) =>
+        a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+      );
   }
 }

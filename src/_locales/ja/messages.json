@@ -248,5 +248,11 @@
   },
   "settings_toolContentHelp": {
     "message": "Claude の Web 検索やツール結果も保存する"
+  },
+  "settings_includeAttachments": {
+    "message": "添付ファイルを含める"
+  },
+  "settings_includeAttachmentsHelp": {
+    "message": "アップロードファイルや貼付テキストカードを保存（参照のみ）"
   }
 }

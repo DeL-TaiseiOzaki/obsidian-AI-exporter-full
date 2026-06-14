@@ -101,6 +101,11 @@ describe('storage', () => {
       expect(settings.enableToolContent).toBe(false);
     });
 
+    it('returns default includeAttachments true when empty', async () => {
+      const settings = await getSettings();
+      expect(settings.includeAttachments).toBe(true);
+    });
+
     it('returns default settings on error', async () => {
       vi.mocked(chrome.storage.local.get).mockRejectedValue(new Error('Storage error'));
 
@@ -167,6 +172,16 @@ describe('storage', () => {
       expect(chrome.storage.sync.set).toHaveBeenCalled();
       const callArgs = vi.mocked(chrome.storage.sync.set).mock.calls[0][0];
       expect(callArgs.settings.enableToolContent).toBe(true);
+    });
+
+    it('round-trips includeAttachments false', async () => {
+      vi.mocked(chrome.storage.sync.get).mockResolvedValue({ settings: {} });
+
+      await saveSettings({ includeAttachments: false });
+
+      expect(chrome.storage.sync.set).toHaveBeenCalled();
+      const callArgs = vi.mocked(chrome.storage.sync.set).mock.calls[0][0];
+      expect(callArgs.settings.includeAttachments).toBe(false);
     });
 
     it('merges outputOptions with current settings', async () => {

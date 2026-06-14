@@ -27,6 +27,7 @@ export class GeminiExtractor extends BaseExtractor {
    * Apply user settings: enable/disable auto-scroll
    */
   applySettings(settings: SyncSettings): void {
+    super.applySettings(settings);
     this.enableAutoScroll = settings.enableAutoScroll ?? false;
   }
 
