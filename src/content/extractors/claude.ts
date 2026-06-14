@@ -10,7 +10,7 @@
 import { BaseExtractor } from './base';
 import { sanitizeHtml } from '../../lib/sanitize';
 import { htmlToMarkdownRaw } from '../markdown-rules';
-import type { ConversationMessage, DeepResearchSource, SyncSettings } from '../../lib/types';
+import type { ConversationMessage, DeepResearchSource, MessageAttachment } from '../../lib/types';
 import { SELECTORS, DEEP_RESEARCH_SELECTORS, JOINED_SELECTORS } from './selectors/claude';
 
 /**
@@ -21,15 +21,8 @@ import { SELECTORS, DEEP_RESEARCH_SELECTORS, JOINED_SELECTORS } from './selector
  */
 export class ClaudeExtractor extends BaseExtractor {
   readonly platform = 'claude';
-  /** Include tool-use / intermediate content (web search, code interpreter, etc.) */
-  enableToolContent = false;
 
-  /**
-   * Apply user settings: enable/disable tool content extraction
-   */
-  applySettings(settings: SyncSettings): void {
-    this.enableToolContent = settings.enableToolContent ?? false;
-  }
+  // Settings (enableToolContent, includeAttachments) are applied by BaseExtractor.
 
   // ========== Platform Detection ==========
 
@@ -122,16 +115,20 @@ export class ClaudeExtractor extends BaseExtractor {
 
     const sortedElements = this.sortByDomPosition(allElements);
 
-    // Pre-extract tool content keyed by message ID (matches buildMessagesFromElements format)
+    // Pre-extract tool content + attachments keyed by message ID
+    // (keys match buildMessagesFromElements' `${type}-${index}` format).
     const toolContentById = new Map<string, string>();
-    if (this.enableToolContent) {
-      sortedElements.forEach((item, index) => {
-        if (item.type === 'assistant') {
-          const tc = this.extractToolContentFromElement(item.element);
-          if (tc) toolContentById.set(`assistant-${index}`, tc);
-        }
-      });
-    }
+    const attachmentsById = new Map<string, MessageAttachment[]>();
+    sortedElements.forEach((item, index) => {
+      if (this.enableToolContent && item.type === 'assistant') {
+        const tc = this.extractToolContentFromElement(item.element);
+        if (tc) toolContentById.set(`assistant-${index}`, tc);
+      }
+      if (this.includeAttachments) {
+        const atts = this.extractAttachments(item.element);
+        if (atts.length > 0) attachmentsById.set(`${item.type}-${index}`, atts);
+      }
+    });
 
     const messages = this.buildMessagesFromElements(
       sortedElements,
@@ -139,12 +136,18 @@ export class ClaudeExtractor extends BaseExtractor {
       el => this.extractAssistantContent(el)
     );
 
-    // Attach tool content to corresponding assistant messages (DES-014 H-5: immutable)
-    if (toolContentById.size === 0) return messages;
+    // Attach tool content + attachments to messages (DES-014 H-5: immutable)
+    if (toolContentById.size === 0 && attachmentsById.size === 0) return messages;
 
     return messages.map(msg => {
       const tc = toolContentById.get(msg.id);
-      return tc ? { ...msg, toolContent: tc } : msg;
+      const atts = attachmentsById.get(msg.id);
+      if (!tc && !atts) return msg;
+      return {
+        ...msg,
+        ...(tc ? { toolContent: tc } : {}),
+        ...(atts ? { attachments: atts } : {}),
+      };
     });
   }
 
@@ -183,29 +186,55 @@ export class ClaudeExtractor extends BaseExtractor {
    * @see NFR-001-2 in design document
    */
   private extractAssistantContent(element: Element): string {
-    // Grid layout: Extended Thinking or Tool-Use (.row-start-1 + .row-start-2)
-    const responseSection = element.querySelector('.row-start-2');
-    if (responseSection) {
-      // Check if .row-start-2 has markdown content (Extended Thinking / Tool-Use)
-      const markdownInSection = this.queryWithFallback<HTMLElement>(
-        SELECTORS.markdownContent,
-        responseSection
-      );
-      if (markdownInSection) {
-        return sanitizeHtml(markdownInSection.innerHTML);
-      }
-      // .row-start-2 has no markdown content (e.g., thinking-status responses
-      // where content is a grid sibling). Fall through to search entire element.
+    // Collect ALL response-body markdown blocks in DOM order, not just the first.
+    //
+    // When the assistant uses a tool (web search, code interpreter, etc.) the
+    // response is split into multiple markdown blocks interleaved with tool
+    // widgets. A single querySelector only returned the first block, dropping
+    // everything after the tool use (issue: tool-use content truncation).
+    //
+    // Tool / Extended-Thinking sections live under `.row-start-1` and are
+    // handled separately by extractToolContentFromElement(); exclude them here
+    // so body and tool content are not double-counted.
+    // Use the UNION across markdown tiers, not the first matching tier. The
+    // body and a tool section can render different tiers (e.g. tool uses
+    // `.standard-markdown` while the body uses `.progressive-markdown`); a
+    // first-match-only query (queryAllWithFallback) would return just the tool
+    // tier, the isInsideToolSection filter would drop it, and the empty-blocks
+    // fallback below would dump the whole element — re-leaking tool/artifact
+    // chrome into the body.
+    const blocks = this.queryAllUnion<HTMLElement>(SELECTORS.markdownContent, element).filter(
+      el => !this.isInsideToolSection(el, element)
+    );
+
+    if (blocks.length > 0) {
+      return blocks.map(el => sanitizeHtml(el.innerHTML)).join('\n');
     }
 
-    // Non-grid fallback or empty .row-start-2: search the entire element
-    const markdownEl = this.queryWithFallback<HTMLElement>(SELECTORS.markdownContent, element);
-    if (markdownEl) {
-      return sanitizeHtml(markdownEl.innerHTML);
-    }
-
-    // Fallback: use the element's innerHTML
+    // Fallback: use the element's innerHTML (no markdown blocks found)
     return sanitizeHtml(element.innerHTML);
+  }
+
+  /**
+   * Whether a markdown block lives inside a tool/thinking section
+   * (`.row-start-1`) within the given assistant response element.
+   *
+   * Such blocks belong to tool activity, not the assistant's prose body.
+   *
+   * Subtlety: the assistant's *body* prose is wrapped in a nested grid whose
+   * wrapper ALSO carries `.row-start-1` but lives *inside* the body container
+   * `.row-start-2`. A naive `closest('.row-start-1')` therefore misclassifies
+   * body prose as tool content, which dropped the body and forced the
+   * whole-element fallback (leaking tool widgets / artifact-card chrome). The
+   * genuine tool section is the `.row-start-1` that is a *sibling* of
+   * `.row-start-2` — i.e. not itself nested inside a `.row-start-2`.
+   */
+  private isInsideToolSection(el: Element, root: Element): boolean {
+    const toolSection = el.closest('.row-start-1');
+    if (toolSection === null || !root.contains(toolSection)) return false;
+    // A `.row-start-1` nested inside `.row-start-2` is the body wrapper, not
+    // the tool section.
+    return toolSection.closest('.row-start-2') === null;
   }
 
   /**
@@ -301,6 +330,24 @@ export class ClaudeExtractor extends BaseExtractor {
         parts.push(html);
       }
     });
+  }
+
+  // ========== Attachment Extraction ==========
+
+  /**
+   * Extract attachment cards (uploaded files, images, pasted-text cards) for a
+   * message element. Searches the enclosing turn so cards rendered as siblings
+   * of the message body are still found.
+   *
+   * Binary file bodies are not in the DOM, so only a reference (name + kind)
+   * is captured.
+   */
+  private extractAttachments(messageElement: Element): MessageAttachment[] {
+    // Attachment cards may render as siblings of the message body, so search
+    // the enclosing turn rather than just the message element.
+    const scope =
+      messageElement.closest('.group') ?? messageElement.parentElement ?? messageElement;
+    return this.collectAttachments(scope, SELECTORS.attachment, SELECTORS.attachmentName);
   }
 
   // ========== Deep Research Extraction ==========

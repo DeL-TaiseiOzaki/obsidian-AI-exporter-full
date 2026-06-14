@@ -21,8 +21,25 @@ export interface ConversationMessage {
   htmlContent?: string;
   /** Tool-use content (web search, code interpreter) — rendered as separate callout */
   toolContent?: string;
+  /** Attachments on the message (uploaded files, pasted-text cards) */
+  attachments?: MessageAttachment[];
   /** Zero-based message order in conversation */
   index: number;
+}
+
+/**
+ * An attachment on a conversation message (uploaded file, image, or pasted
+ * long-text card). Binary file bodies live on the platform's servers and are
+ * not present in the page DOM, so only a reference (name + kind) and any text
+ * that the page actually renders (pasted text, text-file preview) are captured.
+ */
+export interface MessageAttachment {
+  /** Display name / label (filename or e.g. "Pasted text") */
+  name: string;
+  /** Attachment kind */
+  kind: 'file' | 'image' | 'paste';
+  /** Inline text content when present in the DOM (pasted text, text preview) */
+  text?: string;
 }
 
 /**
@@ -184,6 +201,8 @@ export interface SyncSettings {
   enableAppendMode: boolean;
   /** Include tool-use / intermediate content (e.g., web search results) */
   enableToolContent: boolean;
+  /** Include message attachments (uploaded files, pasted-text cards) when present in the DOM */
+  includeAttachments: boolean;
 }
 
 /**

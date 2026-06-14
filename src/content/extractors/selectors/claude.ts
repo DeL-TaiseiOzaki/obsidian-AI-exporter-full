@@ -61,6 +61,22 @@ export const SELECTORS = {
     '.text-text-500.text-xs', // Tailwind (MEDIUM)
     '[class*="text-text-500"]', // Partial match (LOW)
   ],
+
+  // Attachment cards on a user turn (uploaded files, images, pasted-text cards).
+  // Pasted long text is rendered as a file-like card labelled "PASTED".
+  // TODO(verify): confirm against live claude.ai DOM before relying on these.
+  attachment: [
+    '[data-testid="file-thumbnail"]', // File/paste thumbnail (HIGH)
+    '[data-testid$="-thumbnail"]', // Thumbnail variants (MEDIUM)
+    '[class*="group/thumbnail"]', // Structural (LOW)
+  ],
+
+  // Filename / label element within an attachment card
+  attachmentName: [
+    'h3', // Card title (HIGH)
+    '[class*="break-all"]', // Filename text (MEDIUM)
+    '.truncate', // Generic label (LOW)
+  ],
 } as const satisfies SelectorGroup;
 
 /**

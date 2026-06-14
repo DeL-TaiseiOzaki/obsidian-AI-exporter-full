@@ -103,6 +103,7 @@ export class ChatGPTExtractor extends BaseExtractor {
             role: 'user',
             content,
             index: messages.length,
+            ...this.extractExtras(turn, 'user'),
           });
         }
       } else if (role === 'assistant') {
@@ -114,12 +115,82 @@ export class ChatGPTExtractor extends BaseExtractor {
             content,
             htmlContent: content,
             index: messages.length,
+            ...this.extractExtras(turn, 'assistant'),
           });
         }
       }
     });
 
     return messages;
+  }
+
+  /**
+   * Extract optional per-message extras (tool activity, attachments) according
+   * to the active settings. Returned as a partial so callers can spread it onto
+   * the message object only when something was found.
+   */
+  private extractExtras(
+    turn: Element,
+    role: 'user' | 'assistant'
+  ): Partial<Pick<ConversationMessage, 'toolContent' | 'attachments'>> {
+    const extras: Partial<Pick<ConversationMessage, 'toolContent' | 'attachments'>> = {};
+
+    if (this.enableToolContent && role === 'assistant') {
+      const toolContent = this.extractToolContentFromTurn(turn);
+      if (toolContent) extras.toolContent = toolContent;
+    }
+
+    if (this.includeAttachments) {
+      const attachments = this.collectAttachments(
+        turn,
+        SELECTORS.attachment,
+        SELECTORS.attachmentName
+      );
+      if (attachments.length > 0) extras.attachments = attachments;
+    }
+
+    return extras;
+  }
+
+  /**
+   * Extract tool-activity content (web search, code interpreter, image gen)
+   * from an assistant turn. Returns a string whose first line is a bold summary
+   * so {@link formatToolContent} can use it as the callout title, or null when
+   * no tool widget is present.
+   */
+  private extractToolContentFromTurn(turn: Element): string | null {
+    const widgets = this.queryAllWithFallback<HTMLElement>(SELECTORS.toolActivity, turn);
+    if (widgets.length === 0) return null;
+
+    const parts: string[] = [];
+    for (const widget of widgets) {
+      const summaryEl = this.queryWithFallback<HTMLElement>(SELECTORS.toolSummary, widget);
+      const summary = this.sanitizeText(summaryEl?.textContent ?? '');
+
+      // Derive the remaining text by removing the summary ELEMENT from a clone,
+      // rather than slicing the summary STRING off the front. The summary is
+      // not guaranteed to be a leading prefix of the widget's text (an icon or
+      // label may precede it), and a naive prefix-slice would then re-emit the
+      // summary inside `rest`, duplicating it.
+      let rest: string;
+      if (summaryEl) {
+        const clone = widget.cloneNode(true) as HTMLElement;
+        this.queryWithFallback<HTMLElement>(SELECTORS.toolSummary, clone)?.remove();
+        rest = this.sanitizeText(clone.textContent ?? '');
+      } else {
+        rest = this.sanitizeText(widget.textContent ?? '');
+      }
+
+      if (summary) {
+        parts.push(`**${summary}**`);
+        if (rest && rest !== summary) parts.push(rest);
+      } else if (rest) {
+        parts.push(rest);
+      }
+    }
+
+    const joined = parts.join('\n\n').trim();
+    return joined || null;
   }
 
   /**
@@ -149,25 +220,45 @@ export class ChatGPTExtractor extends BaseExtractor {
    * @see NFR-001-2 in design document
    */
   private extractAssistantContent(turnElement: Element): string {
-    // Find markdown content within the turn
-    const markdownEl = this.queryWithFallback<HTMLElement>(SELECTORS.markdownContent, turnElement);
-    if (markdownEl) {
-      // Clean citation URLs before returning
-      const cleanedHtml = this.cleanCitationUrls(markdownEl.innerHTML);
-      return sanitizeHtml(cleanedHtml);
+    // Collect ALL markdown blocks in DOM order, not just the first.
+    //
+    // When the assistant uses a tool (web search, code interpreter, image gen,
+    // etc.) the response is split into multiple `.markdown.prose` blocks with
+    // tool widgets in between. A single querySelector only returned the first
+    // block, dropping everything after the tool use. Tool widgets are separate
+    // DOM nodes (not `.markdown.prose`), so collecting every markdown block
+    // recovers the post-tool prose without pulling in tool internals.
+    const blocks = this.queryAllUnion<HTMLElement>(SELECTORS.markdownContent, turnElement).filter(
+      el => !this.isInsideToolWidget(el, turnElement)
+    );
+    if (blocks.length > 0) {
+      return blocks.map(el => sanitizeHtml(this.cleanCitationUrls(el.innerHTML))).join('\n');
     }
 
     // Fallback: try assistantResponse selectors
-    const assistantEl = this.queryWithFallback<HTMLElement>(
+    const assistantBlocks = this.queryAllUnion<HTMLElement>(
       SELECTORS.assistantResponse,
       turnElement
-    );
-    if (assistantEl) {
-      const cleanedHtml = this.cleanCitationUrls(assistantEl.innerHTML);
-      return sanitizeHtml(cleanedHtml);
+    ).filter(el => !this.isInsideToolWidget(el, turnElement));
+    if (assistantBlocks.length > 0) {
+      return assistantBlocks.map(el => sanitizeHtml(this.cleanCitationUrls(el.innerHTML))).join('\n');
     }
 
     return '';
+  }
+
+  /**
+   * Whether a markdown block lives inside a tool widget within the turn.
+   *
+   * The primary markdown selector (`.markdown.prose`) is not role-scoped, so a
+   * tool widget that renders its output as `.markdown.prose` would otherwise
+   * leak tool internals into the assistant body. Mirrors Claude's
+   * isInsideToolSection. Tool content is captured separately (opt-in) via
+   * extractToolContentFromTurn.
+   */
+  private isInsideToolWidget(el: Element, root: Element): boolean {
+    const tool = el.closest('[data-message-author-role="tool"]');
+    return tool !== null && root.contains(tool);
   }
 
   /**

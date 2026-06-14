@@ -689,14 +689,17 @@ describe('ChatGPTExtractor', () => {
         </section>
       `);
 
-      const spy = vi.spyOn(extractor, 'queryWithFallback');
+      // extractAssistantContent now collects the UNION of all markdown blocks
+      // in DOM order (DES-018 tool-use truncation fix), so it queries via
+      // queryAllUnion rather than queryWithFallback.
+      const spy = vi.spyOn(extractor, 'queryAllUnion');
       const messages = extractor.extractMessages();
 
       // Assistant turn should be skipped (empty content after both fallbacks fail)
       expect(messages).toHaveLength(1);
       expect(messages[0].role).toBe('user');
 
-      // Verify queryWithFallback was called for assistant extraction
+      // Verify queryAllUnion was called for assistant extraction
       const assistantCalls = spy.mock.calls.filter(
         call => Array.isArray(call[0]) && call[0].some((s: string) => s.includes('.markdown'))
       );

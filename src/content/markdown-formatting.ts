@@ -7,7 +7,7 @@
 
 import { htmlToMarkdown, escapeAngleBrackets } from './markdown-rules';
 import { PLATFORM_LABELS } from '../lib/constants';
-import type { AIPlatform, TemplateOptions } from '../lib/types';
+import type { AIPlatform, MessageAttachment, TemplateOptions } from '../lib/types';
 
 /**
  * Maximum visible length of an auto-generated question header (issue #187).
@@ -149,6 +149,70 @@ export function formatToolContent(toolContent: string, options: TemplateOptions)
     case 'plain':
     default: {
       return bodyLines.length > 0 ? `**${title}**\n${bodyLines.join('\n')}` : `**${title}**`;
+    }
+  }
+}
+
+/** Emoji marker for each attachment kind in the rendered list. */
+const ATTACHMENT_ICONS: Record<MessageAttachment['kind'], string> = {
+  file: '📄',
+  image: '🖼️',
+  paste: '📋',
+};
+
+/**
+ * Render a single attachment as markdown lines (the list item plus any
+ * captured inline text quoted underneath). Returns one string per output line.
+ */
+function attachmentLines(attachment: MessageAttachment): string[] {
+  const icon = ATTACHMENT_ICONS[attachment.kind] ?? '📎';
+  const name = escapeAngleBrackets(attachment.name).replace(/\n+/g, ' ').trim() || 'Attachment';
+  const lines = [`- ${icon} ${name}`];
+
+  const text = attachment.text?.trim();
+  if (text) {
+    // Quote the captured text two spaces in so it nests under the list item.
+    for (const line of escapeAngleBrackets(text).split('\n')) {
+      lines.push(`  > ${line}`);
+    }
+  }
+  return lines;
+}
+
+/**
+ * Format message attachments (uploaded files, pasted-text cards) as a block.
+ *
+ * Binary file bodies are not present in the DOM, so this renders references
+ * (name + kind) plus any text the page actually exposes (pasted text,
+ * text-file preview).
+ *
+ * @param attachments Attachments captured from the message
+ * @param options Template options for format selection
+ */
+export function formatAttachments(
+  attachments: MessageAttachment[],
+  options: TemplateOptions
+): string {
+  if (attachments.length === 0) return '';
+
+  const title = 'Attachments';
+  const body = attachments.flatMap(attachmentLines);
+
+  switch (options.messageFormat) {
+    case 'callout': {
+      // Collapsible callout: [!INFO]- collapsed by default
+      const formatted = body.map(line => `> ${line}`);
+      return `> [!INFO]- ${title}\n${formatted.join('\n')}`;
+    }
+
+    case 'blockquote': {
+      const quoted = body.map(line => `> ${line}`);
+      return `**${title}**\n${quoted.join('\n')}`;
+    }
+
+    case 'plain':
+    default: {
+      return `**${title}**\n${body.join('\n')}`;
     }
   }
 }
